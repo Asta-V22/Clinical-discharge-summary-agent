@@ -24,7 +24,7 @@ def get_llm_config(cli_api_key=None) -> dict:
             "is_live": True
         }
 
-    # 1. Resolve API Key (CLI argument overrides env vars)
+    # 1. Resolve API Key (CLI argument overrides env vars
     api_key = (
         cli_api_key
         or os.getenv("LLM_API_KEY")
