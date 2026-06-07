@@ -3,9 +3,11 @@
 // ================================================================
 
 // Dynamically resolve API URL to support local development (e.g. Live Server or opening files directly)
+// When served by FastAPI (locally or on Render/etc.), use same-origin (empty string).
+// Only use localhost:8000 when opening the HTML file directly from disk.
 const API = window.location.protocol === 'file:' 
     ? 'http://localhost:8000' 
-    : (window.location.port === '8000' ? '' : `${window.location.protocol}//${window.location.hostname}:8000`);
+    : '';
 
 // ── Global State ────────────────────────────────────────────────────
 const state = {
