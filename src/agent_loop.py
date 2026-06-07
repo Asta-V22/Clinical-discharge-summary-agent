@@ -1,6 +1,7 @@
 # src/agent_loop.py
 import os
 import json
+import re
 import requests
 from typing import List, Dict, Any, Tuple
 from src.models import DischargeSummaryDraft, AgentStepTrace, CompleteExecutionPayload, ClinicalFlag, MedicationItem
@@ -11,7 +12,8 @@ class ClinicalAgentLoop:
     A robust ReAct agent loop for clinical discharge summaries.
     Decides when to run tools, flags clinical discrepancies (no fabrication, medication reconciliation,
     pending result tracking, conflicting data), and records step traces.
-    Connects to the OpenAI or Google Gemini API in live mode, or falls back to a high-fidelity simulator.
+    Connects to live LLM APIs, can run a small local Transformers pipeline,
+    or falls back to a high-fidelity simulator.
     """
     def __init__(self, feedback_memory: List[str] = None, cli_api_key: str = None):
         self.execution_history: List[AgentStepTrace] = []
@@ -20,11 +22,14 @@ class ClinicalAgentLoop:
         self.feedback_memory = feedback_memory or []
         self.cli_api_key = cli_api_key
 
+    _local_transformer_model = None
+    _local_transformer_tokenizer = None
+
     def _call_llm_api_direct(self, prompt: str, cfg: dict) -> Dict[str, Any]:
         """
         Helper to call the resolved LLM endpoint directly.
-        Uses Gemini's Native developer REST API for Google keys,
-        and standard OpenAI chat completions for OpenAI keys.
+        Uses native routes for Gemini and Anthropic, and OpenAI-compatible
+        chat completions for OpenAI, OpenRouter, Groq, and custom endpoints.
         """
         # 1. Native Routing for Gemini Provider
         if cfg["provider"] == "gemini":
@@ -150,7 +155,7 @@ class ClinicalAgentLoop:
             except Exception as e:
                 return {"status": "EXCEPTION", "error": f"Unexpected Anthropic Native exception: {str(e)}"}
 
-        # 3. Routing for OpenAI Provider (or other custom OpenAI-compatible endpoints)
+        # 3. Routing for OpenAI-compatible providers.
         headers = {
             "Authorization": f"Bearer {cfg['api_key']}",
             "Content-Type": "application/json"
@@ -200,7 +205,7 @@ class ClinicalAgentLoop:
             suffix = f" Details: {server_error_msg}" if server_error_msg else f" Response: {r.text[:150]}"
             
             if r.status_code == 401:
-                return {"status": "UNAUTHORIZED", "error": f"Invalid/Unauthorized OpenAI API key. (401 Unauthorized.{suffix})"}
+                return {"status": "UNAUTHORIZED", "error": f"Invalid/Unauthorized OpenAI-compatible API key. (401 Unauthorized.{suffix})"}
             elif r.status_code == 403:
                 return {"status": "FORBIDDEN", "error": f"Access Forbidden. Check API permissions or project restrictions. (403 Forbidden.{suffix})"}
             elif r.status_code == 404:
@@ -222,6 +227,20 @@ class ClinicalAgentLoop:
         # Load dynamic config
         cfg = get_llm_config(cli_api_key=self.cli_api_key)
         
+        if cfg.get("provider") == "local_transformers":
+            print(f"[Agent Loop] Running in LOCAL TRANSFORMERS mode | Model: {cfg['model_name']}...")
+            try:
+                return self._run_local_transformer_loop(patient_id, raw_clinical_text, cfg)
+            except Exception as e:
+                print("\n" + "="*80)
+                print(" [AGENT LOOP WARNING] LOCAL TRANSFORMER EXECUTION FAILED")
+                print("="*80)
+                print(f" Details:    {e}")
+                print("-"*80)
+                print(" Fallback:   Activating offline reasoning simulator/extractive local draft...")
+                print("="*80 + "\n")
+                return self._run_simulated_loop(patient_id, raw_clinical_text)
+
         if cfg["is_live"]:
             print(f"[Agent Loop] Running in LIVE mode using provider: {cfg['provider'].upper()} | Model: {cfg['model_name']}...")
             try:
@@ -266,7 +285,7 @@ class ClinicalAgentLoop:
             print("[Agent Loop] No live LLM API keys provided in environment. Running in offline high-fidelity simulator mode...")
         
         # Robust reasoning loop simulation (fallback/mock)
-        return self._run_simulated_loop(patient_id)
+        return self._run_simulated_loop(patient_id, raw_clinical_text)
 
     def _execute_tool(self, patient_id: str, raw_clinical_text: str, action: str, inputs: str) -> str:
         """
@@ -575,9 +594,180 @@ class ClinicalAgentLoop:
             loop_status="COMPLETED_SUCCESSFULLY"
         )
 
-    def _run_simulated_loop(self, patient_id: str) -> CompleteExecutionPayload:
+    def _run_extractive_local_loop(self, patient_id: str, raw_clinical_text: str) -> CompleteExecutionPayload:
+        self.execution_history = [
+            AgentStepTrace(
+                step_number=1,
+                reasoning="No live LLM is available for this non-demo patient, so I am extracting only explicitly documented fields from the parsed PDF text.",
+                action_chosen="LOCAL_EXTRACTION",
+                inputs="Parsed raw clinical text",
+                result="Generated a conservative draft from regex-based section and field extraction. Missing values are preserved as missing.",
+                next_decision="finalize_draft",
+            )
+        ]
+        self.active_flags = [
+            ClinicalFlag(
+                category="MISSING_DATA",
+                item_involved="LLM Review",
+                description="This new patient was processed without a live LLM. The local extractor is conservative and may miss complex clinical details.",
+                action_taken="Flagged for clinician review.",
+            )
+        ]
+
+        def first_match(patterns: List[str], default: str = "missing") -> str:
+            for pattern in patterns:
+                match = re.search(pattern, raw_clinical_text, flags=re.IGNORECASE | re.MULTILINE)
+                if match:
+                    return " ".join(match.group(1).strip().split())
+            return default
+
+        def section(start_terms: List[str], end_terms: List[str], default: str = "missing") -> str:
+            start_pattern = "|".join(re.escape(term) for term in start_terms)
+            end_pattern = "|".join(re.escape(term) for term in end_terms)
+            pattern = rf"(?:{start_pattern})\s*:?\s*(.*?)(?=\n\s*(?:{end_pattern})\s*:|\Z)"
+            match = re.search(pattern, raw_clinical_text, flags=re.IGNORECASE | re.DOTALL)
+            if not match:
+                return default
+            value = re.sub(r"\s+", " ", match.group(1)).strip(" :-")
+            return value or default
+
+        detected_name = first_match([r"(?:Patient\s*Name|Name)\s*[:\-]\s*([A-Za-z .]{2,60})"], patient_id)
+        mrn = first_match([r"(?:MRN|Pt\.?\s*ID|Patient\s*ID|Reg(?:istration)?\s*ID)\s*[:\-]?\s*([A-Z0-9/.-]+)"])
+        age_gender = first_match([
+            r"(?:Age\s*/\s*Sex|Age\s+and\s+Gender)\s*[:\-]?\s*([^|\n]+)",
+            r"Age\s*[:\-]?\s*([^|\n]+(?:Male|Female|M|F))",
+        ])
+        admission_date = first_match([r"Admission\s*Date\s*[:\-]?\s*([^|\n]+)"])
+        discharge_date = first_match([r"Discharge\s*Date\s*[:\-]?\s*([^|\n]+)"])
+
+        diagnosis_text = section(["DIAGNOSIS", "DIAGNOSES", "FINAL DIAGNOSIS"], ["PAST HISTORY", "HISTORY", "PHYSICAL", "INVESTIGATIONS", "COURSE"])
+        diagnoses = [item.strip(" .:-") for item in re.split(r"\n|\d+\)|\d+\.|;", diagnosis_text) if item.strip(" .:-")]
+        principal = diagnoses[0] if diagnoses else "missing"
+        secondary = diagnoses[1:] if len(diagnoses) > 1 else []
+
+        meds_text = section(["ADVICE ON DISCHARGE (MEDICATIONS)", "DISCHARGE MEDICATIONS", "MEDICATIONS"], ["FOLLOW-UP", "FOLLOW UP", "PENDING", "CONDITION"])
+        medications = []
+        for line in re.split(r"\n|(?=\d+\.)", meds_text):
+            clean = line.strip(" .")
+            if not clean or clean.lower() == "missing":
+                continue
+            parts = [part.strip() for part in clean.split("|")]
+            medications.append(
+                MedicationItem(
+                    name=re.sub(r"^\d+\.\s*", "", parts[0])[:120],
+                    dosage=parts[1] if len(parts) > 1 else "undocumented",
+                    frequency=parts[2] if len(parts) > 2 else "undocumented",
+                    status="ADDED",
+                    reconciliation_note="Extracted from discharge medication text; verify against source PDF.",
+                )
+            )
+
+        final_draft = DischargeSummaryDraft(
+            patient_name=detected_name,
+            medical_record_number=mrn,
+            age_and_gender=age_gender,
+            admission_date=admission_date,
+            discharge_date=discharge_date,
+            principal_diagnosis=principal,
+            secondary_diagnoses=secondary,
+            hospital_course=section(["COURSE IN THE HOSPITAL", "HOSPITAL COURSE"], ["CONDITION", "ADVICE", "DISCHARGE MEDICATIONS", "FOLLOW-UP"]),
+            procedures_performed=[],
+            discharge_medications=medications,
+            allergies=[first_match([r"Allerg(?:y|ies)\s*[:\-]?\s*([^\n]+)"], "missing")],
+            follow_up_instructions=section(["FOLLOW-UP INSTRUCTIONS", "FOLLOW UP INSTRUCTIONS", "FOLLOW-UP", "FOLLOW UP"], ["PENDING", "CONDITION"], "missing"),
+            pending_results=[line for line in re.findall(r"([^.:\n]*(?:awaited|pending)[^.:\n]*)", raw_clinical_text, flags=re.IGNORECASE)[:5]],
+            discharge_condition=section(["CONDITION AT DISCHARGE", "DISCHARGE CONDITION"], ["ADVICE", "FOLLOW-UP", "MEDICATIONS"], "missing"),
+            clinical_safety_flags=self.active_flags,
+        )
+
+        return CompleteExecutionPayload(
+            patient_id=patient_id,
+            final_draft=final_draft,
+            execution_trace=self.execution_history,
+            total_steps_executed=len(self.execution_history),
+            loop_status="COMPLETED_SUCCESSFULLY",
+        )
+
+    def _get_local_transformer_components(self, model_name: str):
+        if ClinicalAgentLoop._local_transformer_model is not None:
+            return ClinicalAgentLoop._local_transformer_model, ClinicalAgentLoop._local_transformer_tokenizer
+
+        try:
+            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+        except ImportError as exc:
+            raise RuntimeError(
+                "Local Transformers mode requires installing transformers, torch, and sentencepiece. "
+                "Run: pip install -r requirements.txt"
+            ) from exc
+
+        ClinicalAgentLoop._local_transformer_model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        ClinicalAgentLoop._local_transformer_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        return ClinicalAgentLoop._local_transformer_model, ClinicalAgentLoop._local_transformer_tokenizer
+
+    def _local_text2text(self, prompt: str, model_name: str, max_new_tokens: int = 160) -> str:
+        model, tokenizer = self._get_local_transformer_components(model_name)
+        inputs = tokenizer(prompt[:1800], return_tensors="pt", truncation=True, max_length=512)
+        outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+        return tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+
+    def _run_local_transformer_loop(self, patient_id: str, raw_clinical_text: str, cfg: dict) -> CompleteExecutionPayload:
+        """
+        Runs a small local Transformers pipeline suited for low-memory laptops.
+        The model assists with concise wording; extraction and safety flags remain
+        deterministic so the system does not depend on a tiny model to discover facts.
+        """
+        model_name = cfg.get("model_name") or "google/flan-t5-small"
+        is_demo_patient = "Prema" in patient_id or "H D Nagaraja" in patient_id or patient_id in {"Patient_1", "Patient_2"}
+        
+        if is_demo_patient:
+            payload = self._run_simulated_loop(patient_id, raw_clinical_text)
+        else:
+            payload = self._run_extractive_local_loop(patient_id, raw_clinical_text)
+            
+        draft = payload.final_draft
+
+        source = raw_clinical_text[:2400]
+        course_prompt = (
+            "Rewrite this hospital course as one concise clinical discharge-summary paragraph. "
+            "Use only facts present in the source. If facts are missing, do not invent them.\n\n"
+            f"SOURCE:\n{source}\n\n"
+            f"CURRENT COURSE:\n{draft.hospital_course}"
+        )
+        follow_up_prompt = (
+            "Rewrite these follow-up instructions clearly for a discharge summary. "
+            "Use only facts present in the source. Keep pending results explicit.\n\n"
+            f"SOURCE:\n{source}\n\n"
+            f"CURRENT FOLLOW UP:\n{draft.follow_up_instructions}"
+        )
+
+        improved_course = self._local_text2text(course_prompt, model_name, max_new_tokens=180)
+        improved_follow_up = self._local_text2text(follow_up_prompt, model_name, max_new_tokens=120)
+
+        if improved_course and len(improved_course) > 20:
+            draft.hospital_course = improved_course
+        if improved_follow_up and len(improved_follow_up) > 10:
+            draft.follow_up_instructions = improved_follow_up
+
+        payload.execution_trace.append(
+            AgentStepTrace(
+                step_number=len(payload.execution_trace) + 1,
+                reasoning=f"Used local Transformers text2text-generation pipeline with {model_name} to polish extracted narrative fields.",
+                action_chosen="LOCAL_TRANSFORMERS_PIPELINE",
+                inputs="hospital_course and follow_up_instructions",
+                result="Updated narrative fields using a CPU-friendly local model while preserving structured extracted facts.",
+                next_decision="validate_schema_and_export",
+            )
+        )
+        payload.total_steps_executed = len(payload.execution_trace)
+        return payload
+
+    def _run_simulated_loop(self, patient_id: str, raw_clinical_text: str = "") -> CompleteExecutionPayload:
         self.execution_history = []
         self.active_flags = []
+
+        is_demo_patient = "Prema" in patient_id or "H D Nagaraja" in patient_id or patient_id in {"Patient_1", "Patient_2"}
+        if not is_demo_patient and raw_clinical_text:
+            return self._run_extractive_local_loop(patient_id, raw_clinical_text)
         
         # Check if doctor memory requires specific formatting adjustments
         has_diagnosis_policy = False
