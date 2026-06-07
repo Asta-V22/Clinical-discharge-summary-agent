@@ -14,15 +14,32 @@ def get_llm_config(cli_api_key=None) -> dict:
     Resolves the LLM configuration dynamically.
     Auto-detects provider and endpoints from the resolved API key prefix.
     """
+    provider_override = (os.getenv("LLM_PROVIDER") or "").strip().lower()
+    if provider_override in {"local", "local_transformers", "transformers"}:
+        return {
+            "api_key": None,
+            "base_url": None,
+            "model_name": os.getenv("LOCAL_TRANSFORMER_MODEL", "google/flan-t5-small"),
+            "provider": "local_transformers",
+            "is_live": True
+        }
+
     # 1. Resolve API Key (CLI argument overrides env vars)
-    api_key = cli_api_key or os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    api_key = (
+        cli_api_key
+        or os.getenv("LLM_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+        or os.getenv("GEMINI_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+    )
     
     if not api_key:
         return {
             "api_key": None,
             "base_url": None,
-            "model_name": None,
-            "is_live": False
+            "model_name": os.getenv("LOCAL_TRANSFORMER_MODEL", "google/flan-t5-small"),
+            "provider": "local_transformers",
+            "is_live": True
         }
     
     api_key = api_key.strip()
@@ -37,8 +54,9 @@ def get_llm_config(cli_api_key=None) -> dict:
         return {
             "api_key": None,
             "base_url": None,
-            "model_name": None,
-            "is_live": False
+            "model_name": os.getenv("LOCAL_TRANSFORMER_MODEL", "google/flan-t5-small"),
+            "provider": "local_transformers",
+            "is_live": True
         }
 
     # 2. Auto-detect provider and assign default configurations
