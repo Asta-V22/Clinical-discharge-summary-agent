@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clinical Discharge Summary Agent</title>
+    <meta name="description" content="AI-powered clinical discharge summary generator with ReAct agent loop, medication reconciliation, and learning feedback optimization.">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <!-- ── Top Navigation ─────────────────────────────────────── -->
+    <nav class="top-nav" id="top-nav">
+        <div class="nav-inner">
+            <div class="nav-logo">
+                <div class="nav-logo-icon">🏥</div>
+                <span class="nav-logo-text">CDSA</span>
+            </div>
+            <button class="nav-tab active" data-tab="dashboard" id="nav-dashboard">Dashboard</button>
+            <button class="nav-tab" data-tab="upload" id="nav-upload">Upload PDF</button>
+            <button class="nav-tab" data-tab="agent" id="nav-agent">Agent Monitor</button>
+            <button class="nav-tab" data-tab="summary" id="nav-summary">Discharge Summary</button>
+            <button class="nav-tab" data-tab="learning" id="nav-learning">Learning & Feedback</button>
+            <button class="nav-tab" data-tab="trace" id="nav-trace">Trace Explorer</button>
+        </div>
+    </nav>
+
+    <!-- ── Toast Container ────────────────────────────────────── -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <!-- ── Main App Container ─────────────────────────────────── -->
+    <div class="app-container">
+
+        <!-- ====== 1. DASHBOARD ====== -->
+        <section class="page-section active" id="page-dashboard">
+            <div class="hero">
+                <div class="hero-badge">⚡ AI-Powered Clinical Intelligence</div>
+                <h1 class="hero-title">Clinical Discharge<br>Summary Agent</h1>
+                <p class="hero-subtitle">
+                    An intelligent ReAct agent that reads clinical patient records, audits medications,
+                    flags safety concerns, and generates structured discharge summaries — learning from
+                    clinician feedback with each iteration.
+                </p>
+                <div class="quick-actions">
+                    <button class="btn btn-primary" onclick="switchTab('upload')">📄 Upload PDF</button>
+                    <button class="btn btn-secondary" onclick="switchTab('summary')">📋 View Drafts</button>
+                    <button class="btn btn-secondary" onclick="switchTab('learning')">📈 Learning Curve</button>
+                </div>
+            </div>
+
+            <div class="stats-grid" id="stats-grid">
+                <div class="glass-card stat-card" id="stat-patients">
+                    <div class="stat-icon">🧑‍⚕️</div>
+                    <div class="stat-value" id="stat-patients-val">—</div>
+                    <div class="stat-label">Patients Processed</div>
+                </div>
+                <div class="glass-card stat-card" id="stat-steps">
+                    <div class="stat-icon">🔄</div>
+                    <div class="stat-value" id="stat-steps-val">—</div>
+                    <div class="stat-label">Agent Steps Run</div>
+                </div>
+                <div class="glass-card stat-card" id="stat-flags">
+                    <div class="stat-icon">🚩</div>
+                    <div class="stat-value" id="stat-flags-val">—</div>
+                    <div class="stat-label">Safety Flags Detected</div>
+                </div>
+                <div class="glass-card stat-card" id="stat-learning">
+                    <div class="stat-icon">🎯</div>
+                    <div class="stat-value" id="stat-learning-val">—</div>
+                    <div class="stat-label">Best Learning Score</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ====== 2. PDF UPLOAD ====== -->
+        <section class="page-section" id="page-upload">
+            <div class="section-header">
+                <h2 class="section-title">PDF Upload & Patient Extraction</h2>
+                <p class="section-subtitle">Upload clinical PDF records to extract patient data for processing.</p>
+            </div>
+
+            <div class="upload-zone glass-card-static" id="upload-zone">
+                <div class="upload-zone-icon">📁</div>
+                <div class="upload-zone-text">Drag & drop a clinical PDF here, or click to browse</div>
+                <div class="upload-zone-hint">Supports multi-patient PDF documents</div>
+                <input type="file" id="file-input" accept=".pdf" style="display:none">
+            </div>
+
+            <div id="patients-container" style="display:none">
+                <h3 style="font-size:1.1rem; font-weight:700; margin: 28px 0 4px; color: var(--text-primary);">Extracted Patients</h3>
+                <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:8px;">Click "Run Full Pipeline" to process a patient through the complete 3-iteration agent loop.</p>
+                <div class="patients-grid" id="patients-grid"></div>
+            </div>
+        </section>
+
+        <!-- ====== 3. AGENT MONITOR ====== -->
+        <section class="page-section" id="page-agent">
+            <div class="section-header">
+                <h2 class="section-title">Agent Execution Monitor</h2>
+                <p class="section-subtitle">Watch the ReAct agent reason, call tools, and compile the discharge summary in real-time.</p>
+            </div>
+
+            <div id="agent-empty" class="empty-state">
+                <div class="empty-state-icon">🤖</div>
+                <div class="empty-state-text">No agent execution in progress</div>
+                <div class="empty-state-hint">Upload a PDF and run the agent to see the execution timeline.</div>
+            </div>
+
+            <div id="agent-live" style="display:none">
+                <div class="agent-header">
+                    <div>
+                        <h3 style="font-size:1.1rem; font-weight:700; color:var(--text-primary);" id="agent-patient-name">Processing: —</h3>
+                        <span style="font-size:0.82rem; color:var(--text-muted);" id="agent-iteration-label">Iteration —</span>
+                    </div>
+                    <span class="status-badge status-observing" id="agent-status-badge">● Initializing</span>
+                </div>
+
+                <div class="progress-container">
+                    <div class="progress-bar-bg">
+                        <div class="progress-bar-fill" id="agent-progress" style="width:0%"></div>
+                    </div>
+                    <div class="progress-label">
+                        <span id="agent-step-label">Step 0 / 10</span>
+                        <span id="agent-percent-label">0%</span>
+                    </div>
+                </div>
+
+                <div class="timeline" id="agent-timeline"></div>
+            </div>
+        </section>
+
+        <!-- ====== 4. DISCHARGE SUMMARY ====== -->
+        <section class="page-section" id="page-summary">
+            <div class="section-header">
+                <h2 class="section-title">Discharge Summary Viewer</h2>
+                <p class="section-subtitle">View the AI-generated structured discharge summary with safety annotations.</p>
+            </div>
+
+            <div class="patient-selector" id="summary-patient-selector"></div>
+
+            <div class="inner-tabs" id="summary-tabs">
+                <button class="inner-tab active" data-subtab="document" onclick="switchSummaryTab('document')">📄 Document</button>
+                <button class="inner-tab" data-subtab="diff" onclick="switchSummaryTab('diff')">🔀 Diff View</button>
+            </div>
+
+            <div id="summary-document-view">
+                <div id="summary-empty" class="empty-state">
+                    <div class="empty-state-icon">📋</div>
+                    <div class="empty-state-text">No discharge summary loaded</div>
+                    <div class="empty-state-hint">Run the full pipeline or select a saved draft to view.</div>
+                </div>
+                <div id="summary-content" style="display:none" class="summary-document"></div>
+            </div>
+
+            <div id="summary-diff-view" style="display:none">
+                <div id="diff-empty" class="empty-state">
+                    <div class="empty-state-icon">🔀</div>
+                    <div class="empty-state-text">No diff data available</div>
+                    <div class="empty-state-hint">Run the full pipeline to compare AI draft vs doctor-edited version.</div>
+                </div>
+                <div id="diff-content" style="display:none" class="diff-container"></div>
+            </div>
+        </section>
+
+        <!-- ====== 5. LEARNING & FEEDBACK ====== -->
+        <section class="page-section" id="page-learning">
+            <div class="section-header">
+                <h2 class="section-title">Learning & Feedback Panel</h2>
+                <p class="section-subtitle">Track how the agent improves across iterations by learning from clinician corrections.</p>
+            </div>
+
+            <div class="patient-selector" id="learning-patient-selector"></div>
+
+            <div id="learning-empty" class="empty-state">
+                <div class="empty-state-icon">📈</div>
+                <div class="empty-state-text">No learning data yet</div>
+                <div class="empty-state-hint">Run the full pipeline to see the 3-iteration learning loop.</div>
+            </div>
+
+            <div id="learning-content" style="display:none">
+                <div class="iterations-grid" id="iterations-grid"></div>
+
+                <div id="perfect-alignment" style="display:none; text-align:center; margin-bottom:24px;">
+                    <div class="perfect-badge">🎯 Perfect Alignment Achieved — Zero Clinician Corrections Required</div>
+                </div>
+
+                <div class="glass-card-static chart-container">
+                    <canvas id="learning-chart"></canvas>
+                </div>
+
+                <div class="section-header" style="margin-top:32px;">
+                    <h3 class="section-title" style="font-size:1.2rem;">Learned Correction Rules</h3>
+                    <p class="section-subtitle">Rules extracted from clinician edits and injected into future prompts.</p>
+                </div>
+                <div class="rules-list" id="rules-list"></div>
+            </div>
+        </section>
+
+        <!-- ====== 6. TRACE EXPLORER ====== -->
+        <section class="page-section" id="page-trace">
+            <div class="section-header">
+                <h2 class="section-title">Execution Trace Explorer</h2>
+                <p class="section-subtitle">Inspect the complete reasoning trace of the agent's execution.</p>
+            </div>
+
+            <div class="patient-selector" id="trace-patient-selector"></div>
+
+            <div class="trace-controls">
+                <input type="text" class="trace-search" id="trace-search" placeholder="🔍 Search within traces...">
+                <select class="trace-select" id="trace-filter">
+                    <option value="all">All Tools</option>
+                    <option value="MedicationReconciliation">💊 Medication Reconciliation</option>
+                    <option value="PendingResultsCheck">🧪 Pending Results</option>
+                    <option value="DiagnosticCheck">📊 Diagnostic Check</option>
+                    <option value="FlagContradiction">🚩 Flag Contradiction</option>
+                    <option value="FINAL_DRAFT">✅ Final Draft</option>
+                </select>
+            </div>
+
+            <div id="trace-empty" class="empty-state">
+                <div class="empty-state-icon">🔍</div>
+                <div class="empty-state-text">No traces loaded</div>
+                <div class="empty-state-hint">Run the pipeline or select a saved trace to explore.</div>
+            </div>
+
+            <div class="trace-accordion" id="trace-accordion"></div>
+        </section>
+
+    </div><!-- /.app-container -->
+
+    <script src="app.js"></script>
+</body>
+</html>
