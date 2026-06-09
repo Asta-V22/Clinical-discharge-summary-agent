@@ -1,10 +1,9 @@
-# src/models.py
+
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 
-# ==========================================
+
 # 1. CLINICAL SAFETY & RECONCILIATION MODELS
-# ==========================================
 
 class ClinicalFlag(BaseModel):
     category: Literal["MISSING_DATA", "MEDICATION_MISMATCH", "CONFLICTING_DIAGNOSES", "PENDING_RESULT_WARNING"] = Field(
@@ -74,9 +73,9 @@ class DischargeSummaryDraft(BaseModel):
         description="A mandatory collection of all clinical safety, conflict, or validation flags raised during draft formulation."
     )
 
-# ==========================================
+
 # 3. AGENT OBSERVABILITY & TRACE SCHEMA
-# ==========================================
+
 
 class AgentStepTrace(BaseModel):
     step_number: int
