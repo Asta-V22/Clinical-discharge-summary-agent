@@ -1,4 +1,3 @@
-# server.py  FastAPI Backend for Clinical Discharge Summary Agent UI
 import os
 import sys
 import json
