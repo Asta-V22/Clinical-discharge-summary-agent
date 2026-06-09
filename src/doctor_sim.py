@@ -1,9 +1,3 @@
-# Simulates a clinician reviewing and editing the AI-generated discharge draft.
-# The "hidden policy" here mimics the kind of consistent formatting preference
-# a real doctor might apply  a verification suffix on diagnoses and a
-# compliance prefix on follow-up instructions. These edits are what the learning
-# engine measures and learns from across iterations.
-
 from src.models import DischargeSummaryDraft
 
 
