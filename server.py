@@ -1,4 +1,4 @@
-# server.py — FastAPI Backend for Clinical Discharge Summary Agent UI
+# server.py  FastAPI Backend for Clinical Discharge Summary Agent UI
 import os
 import sys
 import json
@@ -22,7 +22,7 @@ from src.doctor_sim import DoctorSimulator
 from src.learning_engine import FeedbackLearningEngine
 from src.models import DischargeSummaryDraft, AgentStepTrace, CompleteExecutionPayload
 
-# ── App Init ──────────────────────────────────────────────────────────
+# App init
 app = FastAPI(title="Clinical Discharge Summary Agent API", version="1.0.0")
 
 app.add_middleware(
@@ -33,9 +33,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Shared State ──────────────────────────────────────────────────────
-# In-memory stores that persist for the lifetime of the server process.
-# This keeps things simple — no database needed.
+# Shared state — persists for the lifetime of the server process
 extracted_patients: Dict[str, str] = {}          # patient_name -> raw_text
 pipeline_results: Dict[str, dict] = {}           # patient_name -> full pipeline result
 learning_engine = FeedbackLearningEngine()
@@ -46,7 +44,7 @@ os.makedirs("output/drafts", exist_ok=True)
 os.makedirs("output/traces", exist_ok=True)
 os.makedirs("output/plots", exist_ok=True)
 
-# ── Request / Response Models ─────────────────────────────────────────
+# Request / response models
 
 class RunAgentRequest(BaseModel):
     patient_name: str
@@ -65,7 +63,49 @@ class RunLearningRequest(BaseModel):
     draft: dict
     edited: dict
 
-# ── API Endpoints ─────────────────────────────────────────────────────
+class SetApiKeyRequest(BaseModel):
+    api_key: str
+
+# API endpoints
+
+@app.post("/api/set-api-key")
+async def set_api_key(req: SetApiKeyRequest):
+    """Store the user-supplied API key in the process environment for this session."""
+    key = (req.api_key or "").strip()
+    if not key or len(key) < 8:
+        raise HTTPException(status_code=400, detail="API key is too short or empty.")
+    os.environ["LLM_API_KEY"] = key
+    # Also set the canonical aliases so any provider check picks it up
+    if key.startswith("sk-ant-"):
+        os.environ["ANTHROPIC_API_KEY"] = key
+    elif key.startswith("AIzaSy") or key.startswith("AQ"):
+        os.environ["GEMINI_API_KEY"] = key
+        os.environ["GOOGLE_API_KEY"] = key
+    elif key.startswith("sk-"):
+        os.environ["OPENAI_API_KEY"] = key
+    elif key.startswith("gsk_"):
+        os.environ["GROQ_API_KEY"] = key
+    return {"status": "success", "message": "API key saved for this session."}
+
+
+@app.get("/api/config-status")
+async def get_config_status():
+    """Return current LLM provider configuration status."""
+    from config.settings import get_llm_config
+    try:
+        cfg = get_llm_config()
+        provider = cfg.get("provider", "local_transformers")
+        model    = cfg.get("model_name", "unknown")
+        has_key  = cfg.get("api_key") is not None
+        return {
+            "has_key":  has_key,
+            "provider": provider,
+            "model":    model,
+            "is_live":  cfg.get("is_live", True),
+        }
+    except Exception as e:
+        return {"has_key": False, "provider": "unknown", "model": "unknown", "is_live": False}
+
 
 @app.post("/api/upload-pdf")
 async def upload_pdf(file: UploadFile = File(...)):
@@ -249,36 +289,26 @@ async def list_traces():
 @app.get("/api/learning-curve")
 async def get_learning_curve():
     """Return learning curve data for Chart.js rendering."""
-    # Try to get from latest pipeline runs
     all_data = {}
     for name, result in pipeline_results.items():
         all_data[name] = [it["edit_distance"] for it in result["iterations"]]
 
-    # Fallback: if no pipeline has been run, try to read from engine
     if not all_data and learning_engine.performance_history:
         all_data = dict(learning_engine.performance_history)
-
-    # Final fallback: if nothing exists, return mock data from the known results
-    if not all_data:
-        all_data = {
-            "Prema J": [0.3854, 0.0, 0.0],
-            "H D Nagaraja": [0.4116, 0.0, 0.0]
-        }
 
     return {"learning_data": all_data}
 
 
-# ── Serve Frontend ────────────────────────────────────────────────────
-# This MUST be last so it doesn't intercept API routes
+# Serve frontend — must be last so it doesn't intercept API routes
 web_dir = os.path.join(os.path.dirname(__file__), "web")
 if os.path.isdir(web_dir):
     app.mount("/", StaticFiles(directory=web_dir, html=True), name="web")
 
-# ── Run ───────────────────────────────────────────────────────────────
+# Run directly
 if __name__ == "__main__":
     import uvicorn
     print("\n" + "="*70)
-    print("  CLINICAL DISCHARGE SUMMARY AGENT — WEB INTERFACE")
+    print("  CLINICAL DISCHARGE SUMMARY AGENT  WEB INTERFACE")
     print("  Open your browser at: http://localhost:8000")
     print("="*70 + "\n")
     uvicorn.run(app, host="0.0.0.0", port=8000)
